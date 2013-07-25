@@ -1,5 +1,5 @@
 /*
-** $Id: lparser.c,v 2.128 2012/05/20 14:51:23 roberto Exp $
+** $Id: lparser.c,v 2.133 2013/04/26 13:07:53 roberto Exp $
 ** Lua Parser
 ** See Copyright Notice in lua.h
 */
@@ -245,7 +245,7 @@ static int newupvalue (FuncState *fs, TString *name, expdesc *v) {
 
 static int searchvar (FuncState *fs, TString *n) {
   int i;
-  for (i=fs->nactvar-1; i >= 0; i--) {
+  for (i = cast_int(fs->nactvar) - 1; i >= 0; i--) {
     if (luaS_eqstr(n, getlocvar(fs, i)->varname))
       return i;
   }
@@ -512,12 +512,15 @@ static Proto *addprototype (LexState *ls) {
 
 
 /*
-** codes instruction to create new closure in parent function
+** codes instruction to create new closure in parent function.
+** The OP_CLOSURE instruction must use the last available register,
+** so that, if it invokes the GC, the GC knows which registers
+** are in use at that time.
 */
 static void codeclosure (LexState *ls, expdesc *v) {
   FuncState *fs = ls->fs->prev;
   init_exp(v, VRELOCABLE, luaK_codeABx(fs, OP_CLOSURE, 0, fs->np - 1));
-  luaK_exp2nextreg(fs, v);  /* fix it at stack top (for GC) */
+  luaK_exp2nextreg(fs, v);  /* fix it at the last register */
 }
 
 
@@ -932,12 +935,17 @@ static void suffixedexp (LexState *ls, expdesc *v) {
 
 
 static void simpleexp (LexState *ls, expdesc *v) {
-  /* simpleexp -> NUMBER | STRING | NIL | TRUE | FALSE | ... |
+  /* simpleexp -> FLT | INT | STRING | NIL | TRUE | FALSE | ... |
                   constructor | FUNCTION body | suffixedexp */
   switch (ls->t.token) {
-    case TK_NUMBER: {
-      init_exp(v, VKNUM, 0);
+    case TK_FLT: {
+      init_exp(v, VKFLT, 0);
       v->u.nval = ls->t.seminfo.r;
+      break;
+    }
+    case TK_INT: {
+      init_exp(v, VKINT, 0);
+      v->u.ival = ls->t.seminfo.i;
       break;
     }
     case TK_STRING: {
@@ -997,6 +1005,7 @@ static BinOpr getbinopr (int op) {
     case '-': return OPR_SUB;
     case '*': return OPR_MUL;
     case '/': return OPR_DIV;
+    case TK_IDIV: return OPR_IDIV;
     case '%': return OPR_MOD;
     case '^': return OPR_POW;
     case TK_CONCAT: return OPR_CONCAT;
@@ -1017,7 +1026,8 @@ static const struct {
   lu_byte left;  /* left priority for each binary operator */
   lu_byte right; /* right priority */
 } priority[] = {  /* ORDER OPR */
-   {6, 6}, {6, 6}, {7, 7}, {7, 7}, {7, 7},  /* `+' `-' `*' `/' `%' */
+   {6, 6}, {6, 6},  /* '+' '-' */
+   {7, 7}, {7, 7}, {7, 7}, {7, 7},  /* '*' '/' '//' '%' */
    {10, 9}, {5, 4},                 /* ^, .. (right associative) */
    {3, 3}, {3, 3}, {3, 3},          /* ==, <, <= */
    {3, 3}, {3, 3}, {3, 3},          /* ~=, >, >= */
@@ -1318,7 +1328,7 @@ static void fornum (LexState *ls, TString *varname, int line) {
   if (testnext(ls, ','))
     exp1(ls);  /* optional step */
   else {  /* default step = 1 */
-    luaK_codek(fs, fs->freereg, luaK_numberK(fs, 1));
+    luaK_codek(fs, fs->freereg, luaK_intK(fs, 1));
     luaK_reserveregs(fs, 1);
   }
   forbody(ls, base, line, 1, 1);

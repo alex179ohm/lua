@@ -1,5 +1,5 @@
 /*
-** $Id: lstring.c,v 2.24 2012/05/11 14:14:42 roberto Exp $
+** $Id: lstring.c,v 2.27 2013/06/19 14:27:00 roberto Exp $
 ** String table (keeps all strings handled by Lua)
 ** See Copyright Notice in lua.h
 */
@@ -49,7 +49,7 @@ int luaS_eqstr (TString *a, TString *b) {
 
 
 unsigned int luaS_hash (const char *str, size_t l, unsigned int seed) {
-  unsigned int h = seed ^ l;
+  unsigned int h = seed ^ cast(unsigned int, l);
   size_t l1;
   size_t step = (l >> LUAI_HASHLIMIT) + 1;
   for (l1 = l; l1 >= step; l1 -= step)
@@ -139,7 +139,7 @@ static TString *internshrstr (lua_State *L, const char *str, size_t l) {
        o = gch(o)->next) {
     TString *ts = rawgco2ts(o);
     if (h == ts->tsv.hash &&
-        ts->tsv.len == l &&
+        l == ts->tsv.len &&
         (memcmp(str, getstr(ts), l * sizeof(char)) == 0)) {
       if (isdead(G(L), o))  /* string is dead (but was not collected yet)? */
         changewhite(o);  /* resurrect it */
@@ -157,7 +157,7 @@ TString *luaS_newlstr (lua_State *L, const char *str, size_t l) {
   if (l <= LUAI_MAXSHORTLEN)  /* short string? */
     return internshrstr(L, str, l);
   else {
-    if (l + 1 > (MAX_SIZET - sizeof(TString))/sizeof(char))
+    if (l + 1 > (MAX_SIZE - sizeof(TString))/sizeof(char))
       luaM_toobig(L);
     return createstrobj(L, str, l, LUA_TLNGSTR, G(L)->seed, NULL);
   }
@@ -174,7 +174,7 @@ TString *luaS_new (lua_State *L, const char *str) {
 
 Udata *luaS_newudata (lua_State *L, size_t s, Table *e) {
   Udata *u;
-  if (s > MAX_SIZET - sizeof(Udata))
+  if (s > MAX_SIZE - sizeof(Udata))
     luaM_toobig(L);
   u = &luaC_newobj(L, LUA_TUSERDATA, sizeof(Udata) + s, NULL, 0)->u;
   u->uv.len = s;

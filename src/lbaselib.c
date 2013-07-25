@@ -1,5 +1,5 @@
 /*
-** $Id: lbaselib.c,v 1.274 2012/04/27 14:13:19 roberto Exp $
+** $Id: lbaselib.c,v 1.279 2013/07/05 14:39:15 roberto Exp $
 ** Basic library
 ** See Copyright Notice in lua.h
 */
@@ -45,42 +45,57 @@ static int luaB_print (lua_State *L) {
 
 #define SPACECHARS	" \f\n\r\t\v"
 
+static int b_str2int (const char *s, const char *e, int base, lua_Integer *pn) {
+  lua_Unsigned n = 0;
+  int neg = 0;
+  s += strspn(s, SPACECHARS);  /* skip initial spaces */
+  if (*s == '-') { s++; neg = 1; }  /* handle signal */
+  else if (*s == '+') s++;
+  if (!isalnum((unsigned char)*s))  /* no digit? */
+    return 0;
+  do {
+    int digit = (isdigit((unsigned char)*s)) ? *s - '0'
+                   : toupper((unsigned char)*s) - 'A' + 10;
+    if (digit >= base) return 0;  /* invalid numeral */
+    n = n * base + digit;
+    s++;
+  } while (isalnum((unsigned char)*s));
+  s += strspn(s, SPACECHARS);  /* skip trailing spaces */
+  if (s != e)  /* invalid trailing characters? */
+    return 0;
+  *pn = (neg) ? -(lua_Integer)n : (lua_Integer)n;
+  return 1;
+}
+
+
 static int luaB_tonumber (lua_State *L) {
   if (lua_isnoneornil(L, 2)) {  /* standard conversion */
-    int isnum;
-    lua_Number n = lua_tonumberx(L, 1, &isnum);
-    if (isnum) {
-      lua_pushnumber(L, n);
-      return 1;
-    }  /* else not a number; must be something */
     luaL_checkany(L, 1);
+    if (lua_type(L, 1) == LUA_TNUMBER) {  /* already a number? */
+      lua_settop(L, 1);  /* yes; return it */
+      return 1;
+    }
+    else {
+      size_t l;
+      const char *s = lua_tolstring(L, 1, &l);
+      if (s != NULL && lua_strtonum(L, s, l))  /* can convert to a number? */
+        return 1;
+      /* else not a number */
+    }
   }
   else {
     size_t l;
-    const char *s = luaL_checklstring(L, 1, &l);
-    const char *e = s + l;  /* end point for 's' */
+    const char *s;
+    lua_Integer n;
     int base = luaL_checkint(L, 2);
-    int neg = 0;
+    luaL_checktype(L, 1, LUA_TSTRING);  /* before 'luaL_checklstring'! */
+    s = luaL_checklstring(L, 1, &l);
     luaL_argcheck(L, 2 <= base && base <= 36, 2, "base out of range");
-    s += strspn(s, SPACECHARS);  /* skip initial spaces */
-    if (*s == '-') { s++; neg = 1; }  /* handle signal */
-    else if (*s == '+') s++;
-    if (isalnum((unsigned char)*s)) {
-      lua_Number n = 0;
-      do {
-        int digit = (isdigit((unsigned char)*s)) ? *s - '0'
-                       : toupper((unsigned char)*s) - 'A' + 10;
-        if (digit >= base) break;  /* invalid numeral; force a fail */
-        n = n * (lua_Number)base + (lua_Number)digit;
-        s++;
-      } while (isalnum((unsigned char)*s));
-      s += strspn(s, SPACECHARS);  /* skip trailing spaces */
-      if (s == e) {  /* no invalid trailing characters? */
-        lua_pushnumber(L, (neg) ? -n : n);
-        return 1;
-      }  /* else not a number */
+    if (b_str2int(s, s + l, base, &n)) {
+      lua_pushinteger(L, n);
+      return 1;
     }  /* else not a number */
-  }
+  }  /* else not a number */
   lua_pushnil(L);  /* not a number */
   return 1;
 }
@@ -242,10 +257,16 @@ static int luaB_ipairs (lua_State *L) {
 }
 
 
-static int load_aux (lua_State *L, int status) {
-  if (status == LUA_OK)
+static int load_aux (lua_State *L, int status, int envidx) {
+  if (status == LUA_OK) {
+    if (envidx != 0) {  /* 'env' parameter? */
+      lua_pushvalue(L, envidx);  /* environment for loaded function */
+      if (!lua_setupvalue(L, -2, 1))  /* set it as 1st upvalue */
+        lua_pop(L, 1);  /* remove 'env' if not used by previous call */
+    }
     return 1;
-  else {
+  }
+  else {  /* error (message is on top of the stack) */
     lua_pushnil(L);
     lua_insert(L, -2);  /* put before error message */
     return 2;  /* return nil plus error message */
@@ -256,13 +277,9 @@ static int load_aux (lua_State *L, int status) {
 static int luaB_loadfile (lua_State *L) {
   const char *fname = luaL_optstring(L, 1, NULL);
   const char *mode = luaL_optstring(L, 2, NULL);
-  int env = !lua_isnone(L, 3);  /* 'env' parameter? */
+  int env = (!lua_isnone(L, 3) ? 3 : 0);  /* 'env' index or 0 if no 'env' */
   int status = luaL_loadfilex(L, fname, mode);
-  if (status == LUA_OK && env) {  /* 'env' parameter? */
-    lua_pushvalue(L, 3);
-    lua_setupvalue(L, -2, 1);  /* set it as 1st upvalue of loaded chunk */
-  }
-  return load_aux(L, status);
+  return load_aux(L, status, env);
 }
 
 
@@ -307,9 +324,9 @@ static const char *generic_reader (lua_State *L, void *ud, size_t *size) {
 static int luaB_load (lua_State *L) {
   int status;
   size_t l;
-  int top = lua_gettop(L);
   const char *s = lua_tolstring(L, 1, &l);
   const char *mode = luaL_optstring(L, 3, "bt");
+  int env = (!lua_isnone(L, 4) ? 4 : 0);  /* 'env' index or 0 if no 'env' */
   if (s != NULL) {  /* loading a string? */
     const char *chunkname = luaL_optstring(L, 2, s);
     status = luaL_loadbufferx(L, s, l, chunkname, mode);
@@ -320,11 +337,7 @@ static int luaB_load (lua_State *L) {
     lua_settop(L, RESERVEDSLOT);  /* create reserved slot */
     status = lua_load(L, generic_reader, NULL, chunkname, mode);
   }
-  if (status == LUA_OK && top >= 4) {  /* is there an 'env' argument */
-    lua_pushvalue(L, 4);  /* environment for loaded function */
-    lua_setupvalue(L, -2, 1);  /* set it as 1st upvalue */
-  }
-  return load_aux(L, status);
+  return load_aux(L, status, env);
 }
 
 /* }====================================================== */
@@ -338,7 +351,8 @@ static int dofilecont (lua_State *L) {
 static int luaB_dofile (lua_State *L) {
   const char *fname = luaL_optstring(L, 1, NULL);
   lua_settop(L, 1);
-  if (luaL_loadfile(L, fname) != LUA_OK) lua_error(L);
+  if (luaL_loadfile(L, fname) != LUA_OK)
+    return lua_error(L);
   lua_callk(L, 0, LUA_MULTRET, 0, dofilecont);
   return dofilecont(L);
 }
